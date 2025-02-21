@@ -1,14 +1,14 @@
 ﻿using System;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
+using System.Threading.Tasks;
 
 namespace JsonFlatFileDataStore
 {
     public interface IStorageAccess
     {
-        string ReadJson(string path, Func<string, string> encryptJson, Func<string, string> decryptJson);
-        bool WriteJson(string path, Func<string, string> encryptJson, string content);
+        Task<string> ReadJson(string path, Func<string, string> encryptJson, Func<string, string> decryptJson);
+        Task<bool> WriteJson(string path, Func<string, string> encryptJson, string content);
     }
 
     public static class StorageAccess
@@ -29,7 +29,7 @@ namespace JsonFlatFileDataStore
 
     public class FileStorage : IStorageAccess
     {
-        public string ReadJson(string path, Func<string, string> encryptJson, Func<string, string> decryptJson)
+        public async Task<string> ReadJson(string path, Func<string, string> encryptJson, Func<string, string> decryptJson)
         {
             Stopwatch sw = null;
             var json = "{}";
@@ -38,13 +38,13 @@ namespace JsonFlatFileDataStore
             {
                 try
                 {
-                    json = File.ReadAllText(path);
+                    json = await File.ReadAllTextAsync(path);
                     break;
                 }
                 catch (FileNotFoundException)
                 {
                     json = encryptJson(json);
-                    File.WriteAllText(path, json);
+                    await File.WriteAllTextAsync(path, json);
                     break;
                 }
                 catch (IOException e) when (e.Message.Contains("because it is being used by another process"))
@@ -59,7 +59,7 @@ namespace JsonFlatFileDataStore
             return decryptJson(json);
         }
 
-        public bool WriteJson(string path, Func<string, string> encryptJson, string content)
+        public async Task<bool> WriteJson(string path, Func<string, string> encryptJson, string content)
         {
             Stopwatch sw = null;
 
@@ -67,7 +67,7 @@ namespace JsonFlatFileDataStore
             {
                 try
                 {
-                    File.WriteAllText(path, encryptJson(content));
+                    await File.WriteAllTextAsync(path, encryptJson(content));
                     return true;
                 }
                 catch (IOException e) when (e.Message.Contains("because it is being used by another process"))
@@ -89,12 +89,12 @@ namespace JsonFlatFileDataStore
     {
         private string _content = "{}";
 
-        public string ReadJson(string path, Func<string, string> encryptJson, Func<string, string> decryptJson) => _content;
+        public Task<string> ReadJson(string path, Func<string, string> encryptJson, Func<string, string> decryptJson) => Task.FromResult(_content);
 
-        public bool WriteJson(string path, Func<string, string> encryptJson, string content)
+        public Task<bool> WriteJson(string path, Func<string, string> encryptJson, string content)
         {
             _content = content;
-            return true;
+            return Task.FromResult(true);
         }
     }
 }

@@ -22,9 +22,9 @@ namespace JsonFlatFileDataStore
         private readonly Func<JObject, string> _toJsonFunc;
         private readonly Func<string, string> _convertPathToCorrectCamelCase;
         private readonly BlockingCollection<CommitAction> _updates = new BlockingCollection<CommitAction>();
-        private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly ExpandoObjectConverter _converter = new ExpandoObjectConverter();
-
+        private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+        private bool _executingJsonUpdate;
         private readonly JsonSerializerSettings _serializerSettings = new JsonSerializerSettings()
         { ContractResolver = new CamelCasePropertyNamesContractResolver() };
 
@@ -32,8 +32,6 @@ namespace JsonFlatFileDataStore
         private readonly Func<string, string> _decryptJson;
 
         private JObject _jsonData;
-        private bool _executingJsonUpdate;
-
         public DataStore(string path, bool useLowerCamelCase = true, string keyProperty = null, bool reloadBeforeGetCollection = false,
             string encryptionKey = null, bool minifyJson = false)
         {
@@ -46,8 +44,6 @@ namespace JsonFlatFileDataStore
             _toJsonFunc = useLowerCamelCase
                 ? new Func<JObject, string>(data =>
                 {
-                    // Serializing JObject ignores SerializerSettings, so we have to first deserialize to ExpandoObject and then serialize
-                    // http://json.codeplex.com/workitem/23853
                     var jObject = JsonConvert.DeserializeObject<ExpandoObject>(data.ToString());
                     return JsonConvert.SerializeObject(jObject, usedFormatting, _serializerSettings);
                 })
@@ -65,7 +61,6 @@ namespace JsonFlatFileDataStore
             {
                 var aes256 = new Aes256();
                 _encryptJson = (json => aes256.Encrypt(json, encryptionKey));
-                _decryptJson = (json => aes256.Decrypt(json, encryptionKey));
             }
             else
             {
@@ -73,22 +68,20 @@ namespace JsonFlatFileDataStore
                 _decryptJson = (json => json);
             }
 
-            _jsonData = GetJsonObjectFromFile();
+            Task.Run(async () => _jsonData = await GetJsonObjectFromFile()).GetAwaiter().GetResult();
 
-            // Run updates on a background thread and use BlockingCollection to prevent multiple updates to run simultaneously
             Task.Run(() =>
             {
                 CommitActionHandler.HandleStoreCommitActions(_cts.Token,
                     _updates,
-                    executionState => _executingJsonUpdate = executionState,
-                    jsonText =>
+                    executionState => _executingJsonUpdate = executionState, async jsonText =>
                     {
                         lock (_jsonData)
                         {
                             _jsonData = JObject.Parse(jsonText);
                         }
 
-                        return _fileAccess.WriteJson(_filePath, _encryptJson, jsonText);
+                        return await _fileAccess.WriteJson(_filePath, _encryptJson, jsonText);
                     },
                     GetJsonTextFromFile);
             });
@@ -123,7 +116,7 @@ namespace JsonFlatFileDataStore
         {
             lock (_jsonData)
             {
-                _jsonData = GetJsonObjectFromFile();
+                _jsonData = Task.Run(async () => await GetJsonObjectFromFile()).GetAwaiter().GetResult();
             }
         }
 
@@ -131,8 +124,7 @@ namespace JsonFlatFileDataStore
         {
             if (_reloadBeforeGetCollection)
             {
-                // This might be a bad idea especially if the file is in use, as this can take a long time
-                _jsonData = GetJsonObjectFromFile();
+                _jsonData = Task.Run(async () => await GetJsonObjectFromFile()).GetAwaiter().GetResult();
             }
 
             var convertedKey = _convertPathToCorrectCamelCase(key);
@@ -156,8 +148,7 @@ namespace JsonFlatFileDataStore
         {
             if (_reloadBeforeGetCollection)
             {
-                // This might be a bad idea especially if the file is in use, as this can take a long time
-                _jsonData = GetJsonObjectFromFile();
+                _jsonData = Task.Run(async () => await GetJsonObjectFromFile()).GetAwaiter().GetResult();
             }
 
             var convertedKey = _convertPathToCorrectCamelCase(key);
@@ -260,7 +251,6 @@ namespace JsonFlatFileDataStore
 
         public IDocumentCollection<T> GetCollection<T>(string name = null) where T : class
         {
-            // NOTE 27.6.2017: Should this be new Func<JToken, T>(e => e.ToObject<T>())?
             var readConvert = new Func<JToken, T>(e => JsonConvert.DeserializeObject<T>(e.ToString()));
             var insertConvert = new Func<T, T>(e => e);
             var createNewInstance = new Func<T>(() => Activator.CreateInstance<T>());
@@ -270,7 +260,6 @@ namespace JsonFlatFileDataStore
 
         public IDocumentCollection<dynamic> GetCollection(string name)
         {
-            // As we don't want to return JObject when using dynamic, JObject will be converted to ExpandoObject
             var readConvert = new Func<JToken, dynamic>(e => JsonConvert.DeserializeObject<ExpandoObject>(e.ToString(), _converter) as dynamic);
             var insertConvert = new Func<dynamic, dynamic>(e => JsonConvert.DeserializeObject<ExpandoObject>(JsonConvert.SerializeObject(e), _converter));
             var createNewInstance = new Func<dynamic>(() => new ExpandoObject());
@@ -285,7 +274,7 @@ namespace JsonFlatFileDataStore
 
             bool IsItem(JToken c) => c.Children().FirstOrDefault().GetType() != typeof(JArray)
                                   || (c.Children().FirstOrDefault() is JArray
-                                   && c.Children().FirstOrDefault().Any() // Empty array is considered as a collection
+                                   && c.Children().FirstOrDefault().Any()
                                    && c.Children().FirstOrDefault()?.FirstOrDefault()?.Type != JTokenType.Object);
 
             lock (_jsonData)
@@ -322,8 +311,7 @@ namespace JsonFlatFileDataStore
                 {
                     if (_reloadBeforeGetCollection)
                     {
-                        // This might be a bad idea especially if the file is in use, as this can take a long time
-                        _jsonData = GetJsonObjectFromFile();
+                        _jsonData = Task.Run(async () => await GetJsonObjectFromFile()).GetAwaiter().GetResult();
                     }
 
                     return _jsonData[pathWithConfiguredCase]?
@@ -418,8 +406,6 @@ namespace JsonFlatFileDataStore
             switch (e)
             {
                 case var objToken when e.Type == JTokenType.Object:
-                    //As we don't want to return JObject when using dynamic, JObject will be converted to ExpandoObject
-                    // JToken.ToString() is not culture invariant, so need to use string.Format
                     var content = string.Format(CultureInfo.InvariantCulture, "{0}", objToken);
                     return JsonConvert.DeserializeObject<ExpandoObject>(content, _converter) as dynamic;
 
@@ -434,10 +420,9 @@ namespace JsonFlatFileDataStore
             }
         }
 
-        private string GetJsonTextFromFile() => _fileAccess.ReadJson(_filePath, _encryptJson, _decryptJson);
+        private async Task<JObject> GetJsonObjectFromFile() => JObject.Parse(await GetJsonTextFromFile());
 
-        private JObject GetJsonObjectFromFile() => JObject.Parse(GetJsonTextFromFile());
-
+        private async Task<string> GetJsonTextFromFile() => await _fileAccess.ReadJson(_filePath, _encryptJson, _decryptJson);
 
         internal class CommitAction
         {
