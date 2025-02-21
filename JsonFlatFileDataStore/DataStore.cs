@@ -25,18 +25,24 @@ namespace JsonFlatFileDataStore
         private readonly ExpandoObjectConverter _converter = new ExpandoObjectConverter();
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private bool _executingJsonUpdate;
+
         private readonly JsonSerializerSettings _serializerSettings = new JsonSerializerSettings()
-        { ContractResolver = new CamelCasePropertyNamesContractResolver() };
+        {
+            ContractResolver = new CamelCasePropertyNamesContractResolver()
+        };
 
         private readonly Func<string, string> _encryptJson;
         private readonly Func<string, string> _decryptJson;
 
         private JObject _jsonData;
-        public DataStore(string path, bool useLowerCamelCase = true, string keyProperty = null, bool reloadBeforeGetCollection = false,
-            string encryptionKey = null, bool minifyJson = false)
+
+        public DataStore(string path, bool useLowerCamelCase = true,
+            string keyProperty = null, bool reloadBeforeGetCollection = false,
+            string encryptionKey = null, bool minifyJson = false,
+            IStorageAccess storageAccess = null)
         {
             _filePath = path;
-            _fileAccess = StorageAccess.GetStorageAccess();
+            _fileAccess = storageAccess ?? StorageAccess.GetStorageAccess();
 
             var useEncryption = !string.IsNullOrWhiteSpace(encryptionKey);
             var usedFormatting = minifyJson || useEncryption ? Formatting.None : Formatting.Indented;
@@ -50,7 +56,8 @@ namespace JsonFlatFileDataStore
                 : (s => s.ToString(usedFormatting));
 
             _convertPathToCorrectCamelCase = useLowerCamelCase
-                ? new Func<string, string>(s => string.Concat(s.Select((x, i) => i == 0 ? char.ToLower(x).ToString() : x.ToString())))
+                ? new Func<string, string>(s =>
+                    string.Concat(s.Select((x, i) => i == 0 ? char.ToLower(x).ToString() : x.ToString())))
                 : s => s;
 
             _keyProperty = keyProperty ?? (useLowerCamelCase ? "id" : "Id");
@@ -163,7 +170,8 @@ namespace JsonFlatFileDataStore
 
         public bool InsertItem<T>(string key, T item) => Insert(key, item).Result;
 
-        public async Task<bool> InsertItemAsync<T>(string key, T item) => await Insert(key, item, true).ConfigureAwait(false);
+        public async Task<bool> InsertItemAsync<T>(string key, T item) =>
+            await Insert(key, item, true).ConfigureAwait(false);
 
         private Task<bool> Insert<T>(string key, T item, bool isAsync = false)
         {
@@ -183,7 +191,8 @@ namespace JsonFlatFileDataStore
 
         public bool ReplaceItem<T>(string key, T item, bool upsert = false) => Replace(key, item, upsert).Result;
 
-        public async Task<bool> ReplaceItemAsync<T>(string key, T item, bool upsert = false) => await Replace(key, item, upsert, true).ConfigureAwait(false);
+        public async Task<bool> ReplaceItemAsync<T>(string key, T item, bool upsert = false) =>
+            await Replace(key, item, upsert, true).ConfigureAwait(false);
 
         private Task<bool> Replace<T>(string key, T item, bool upsert = false, bool isAsync = false)
         {
@@ -203,7 +212,8 @@ namespace JsonFlatFileDataStore
 
         public bool UpdateItem(string key, dynamic item) => Update(key, item).Result;
 
-        public async Task<bool> UpdateItemAsync(string key, dynamic item) => await Update(key, item, true).ConfigureAwait(false);
+        public async Task<bool> UpdateItemAsync(string key, dynamic item) =>
+            await Update(key, item, true).ConfigureAwait(false);
 
         private Task<bool> Update(string key, dynamic item, bool isAsync = false)
         {
@@ -260,8 +270,10 @@ namespace JsonFlatFileDataStore
 
         public IDocumentCollection<dynamic> GetCollection(string name)
         {
-            var readConvert = new Func<JToken, dynamic>(e => JsonConvert.DeserializeObject<ExpandoObject>(e.ToString(), _converter) as dynamic);
-            var insertConvert = new Func<dynamic, dynamic>(e => JsonConvert.DeserializeObject<ExpandoObject>(JsonConvert.SerializeObject(e), _converter));
+            var readConvert = new Func<JToken, dynamic>(e =>
+                JsonConvert.DeserializeObject<ExpandoObject>(e.ToString(), _converter) as dynamic);
+            var insertConvert = new Func<dynamic, dynamic>(e =>
+                JsonConvert.DeserializeObject<ExpandoObject>(JsonConvert.SerializeObject(e), _converter));
             var createNewInstance = new Func<dynamic>(() => new ExpandoObject());
 
             return GetCollection(name, readConvert, insertConvert, createNewInstance);
@@ -269,13 +281,14 @@ namespace JsonFlatFileDataStore
 
         public IDictionary<string, ValueType> GetKeys(ValueType? typeToGet = null)
         {
-            bool IsCollection(JToken c) => c.Children().FirstOrDefault() is JArray && c.Children().FirstOrDefault().Any() == false
-                                        || c.Children().FirstOrDefault()?.FirstOrDefault()?.Type == JTokenType.Object;
+            bool IsCollection(JToken c) =>
+                c.Children().FirstOrDefault() is JArray && c.Children().FirstOrDefault().Any() == false
+                || c.Children().FirstOrDefault()?.FirstOrDefault()?.Type == JTokenType.Object;
 
             bool IsItem(JToken c) => c.Children().FirstOrDefault().GetType() != typeof(JArray)
-                                  || (c.Children().FirstOrDefault() is JArray
-                                   && c.Children().FirstOrDefault().Any()
-                                   && c.Children().FirstOrDefault()?.FirstOrDefault()?.Type != JTokenType.Object);
+                                     || (c.Children().FirstOrDefault() is JArray
+                                         && c.Children().FirstOrDefault().Any()
+                                         && c.Children().FirstOrDefault()?.FirstOrDefault()?.Type != JTokenType.Object);
 
             lock (_jsonData)
             {
@@ -283,17 +296,17 @@ namespace JsonFlatFileDataStore
                 {
                     case null:
                         return _jsonData.Children()
-                                        .ToDictionary(c => c.Path, c => IsCollection(c) ? ValueType.Collection : ValueType.Item);
+                            .ToDictionary(c => c.Path, c => IsCollection(c) ? ValueType.Collection : ValueType.Item);
 
                     case ValueType.Collection:
                         return _jsonData.Children()
-                                        .Where(IsCollection)
-                                        .ToDictionary(c => c.Path, c => ValueType.Collection);
+                            .Where(IsCollection)
+                            .ToDictionary(c => c.Path, c => ValueType.Collection);
 
                     case ValueType.Item:
                         return _jsonData.Children()
-                                        .Where(IsItem)
-                                        .ToDictionary(c => c.Path, c => ValueType.Item);
+                            .Where(IsItem)
+                            .ToDictionary(c => c.Path, c => ValueType.Item);
 
                     default:
                         throw new NotSupportedException();
@@ -301,7 +314,8 @@ namespace JsonFlatFileDataStore
             }
         }
 
-        private IDocumentCollection<T> GetCollection<T>(string path, Func<JToken, T> readConvert, Func<T, T> insertConvert, Func<T> createNewInstance)
+        private IDocumentCollection<T> GetCollection<T>(string path, Func<JToken, T> readConvert,
+            Func<T, T> insertConvert, Func<T> createNewInstance)
         {
             var pathWithConfiguredCase = _convertPathToCorrectCamelCase(path);
 
@@ -315,10 +329,10 @@ namespace JsonFlatFileDataStore
                     }
 
                     return _jsonData[pathWithConfiguredCase]?
-                           .Children()
-                           .Select(e => readConvert(e))
-                           .ToList()
-                        ?? new List<T>();
+                               .Children()
+                               .Select(e => readConvert(e))
+                               .ToList()
+                           ?? new List<T>();
                 }
             });
 
@@ -344,7 +358,8 @@ namespace JsonFlatFileDataStore
             return await InnerCommit(isOperationAsync, commitAction);
         }
 
-        private async Task<bool> Commit<T>(string dataPath, Func<List<T>, bool> commitOperation, bool isOperationAsync, Func<JToken, T> readConvert)
+        private async Task<bool> Commit<T>(string dataPath, Func<List<T>, bool> commitOperation, bool isOperationAsync,
+            Func<JToken, T> readConvert)
         {
             var commitAction = new CommitAction();
 
@@ -353,10 +368,10 @@ namespace JsonFlatFileDataStore
                 var updatedJson = string.Empty;
 
                 var selectedData = currentJson[dataPath]?
-                                   .Children()
-                                   .Select(e => readConvert(e))
-                                   .ToList()
-                                ?? new List<T>();
+                                       .Children()
+                                       .Select(e => readConvert(e))
+                                       .ToList()
+                                   ?? new List<T>();
 
                 var success = commitOperation(selectedData);
 
@@ -422,7 +437,8 @@ namespace JsonFlatFileDataStore
 
         private async Task<JObject> GetJsonObjectFromFile() => JObject.Parse(await GetJsonTextFromFile());
 
-        private async Task<string> GetJsonTextFromFile() => await _fileAccess.ReadJson(_filePath, _encryptJson, _decryptJson);
+        private async Task<string> GetJsonTextFromFile() =>
+            await _fileAccess.ReadJson(_filePath, _encryptJson, _decryptJson);
 
         internal class CommitAction
         {
